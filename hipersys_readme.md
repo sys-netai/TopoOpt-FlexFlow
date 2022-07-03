@@ -9,9 +9,8 @@ The FlexFlow testbed code can be used to produce the resnet, vgg, transformer an
 
 The testbed also requires the hacked version of NCCL found at https://github.com/hipersys-team/mccl, and RDMA forwarding setup. For the testbed setup, a detailed documentation on how to setup the RDMA forwarding can be found at https://docs.google.com/document/d/190nelkTXo7fEQNWRe4rnMglzAvV1jj-ZyShMcAGZH08/edit?usp=sharing. This document also contains how to setup the hacked version of nccl 
 
-Two other testbed repositories exist. The first one is the pytorch-based TopoOpt testbed, which is located at https://github.com/hipersys-team/topoopt_testbed. This version is used to generate the testbed plot for ResNet time-to-accuracy plot for the NSDI 2022 submission.
+Two other testbed repositories exist. The first one is the pytorch-based TopoOpt testbed, which is located at https://github.com/hipersys-team/topoopt_testbed. This version is used to generate the testbed plot for ResNet time-to-accuracy plot for the NSDI 2022 submission. Note that this version is data parallel only, this repo does NOT run model parallel.
 
-The second one is the Facebook DLRM implementation, located at https://github.com/hipersys-team/dlrm. This codebase is used to generate the DLRM sensitivity analysis in the NSDI 2023 version of the paper. The file https://github.com/hipersys-team/dlrm/blob/main/run_a100.sh contains a detailed set of parameters for the 12-node testbed in the hipersys group. 
-
+The second one is the Facebook DLRM implementation, located at https://github.com/hipersys-team/dlrm. This codebase is used to generate the DLRM sensitivity analysis in the NSDI 2023 version of the paper. The file https://github.com/hipersys-team/dlrm/blob/main/run_a100.sh contains a detailed set of parameters for the 12-node testbed in the hipersys group. This DLRM model runs in model parallel, where each machine gets one of the embedding tables. 
 
 
