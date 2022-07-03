@@ -1,6 +1,8 @@
 This repository contains the full simulation code of TopoOpt. It contains two main part:
-1. The FlexFlow-fork that does the MCMC search and topology construction. The relavent code located under src/runtime.
-2. The network packet simulator that performs detailed network simulation. The relavent code is located under the submodule "ffsim-opera" (https://github.com/Flasew/ffsim-opera).
+1. The FlexFlow-fork that does the MCMC search and topology construction. The relavent code located under src/runtime. 
+3. The network packet simulator that performs detailed network simulation. The relavent code is located under the submodule "ffsim-opera" (https://github.com/Flasew/ffsim-opera).
+
+Most simulations are run on MIT supercloud which utilizes the Slurm scheduler. A few sample scripts for running the DLRM experiment in the paper can be found under the "scripts" directory under the repository root. 
 
 The testbed version of FlexFlow is NOT located under this repository. The code can be found at https://github.com/hipersys-team/topoopt_ff_testbed
 The FlexFlow testbed code can be used to produce the resnet, vgg, transformer and candle result in the paper.
