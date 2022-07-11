@@ -24,14 +24,23 @@ To use the FlexNet simulator, there are a few essential steps. Here we will use 
 In addition to the parameters from original FlexFlow, FlexNet requires the following additional parameters to be specified:
 
 `--interface-bandwidth <bw>`: bandwidth of each interface in Gbps.
+
 `--network-latency <lat>`: Network link latency in microseconds.
+
 `--degree <n>`: number of interface for each server. For Fat-Tree topology this has to be 1.
+
 `--net-opt <0|1>`: whether the program should enable the TotientPerm algorithm. 1 for ture, 0 for false.
+
 `--nsimnode <n>`: number of nodes to be simulated.
+
 `--big-gpu <n>`: to enable emulating multiple GPU in one machine.
+
 `--measure`: specify the run to be a measurement run, which generate the profiled data in a json file.
+
 `--mfile <filename>`: when the run is not a measurement run, this flag specifies the path the profiled json file.
+
 `--taskgraph <filename>`: output taskgraph of the run. The taskgraph stores the entire DNN training task DAG and is used for the FlexNetPacket simulator.
+
 `--topology <topoopt|fattree|random>`: specify which network topology to simulate and search in this run. 
 
 
