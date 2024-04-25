@@ -41,14 +41,6 @@ void parse_input_args(char **argv, int argc, MoeConfig& config)
       config.dataset_path = std::string(argv[++i]);
       continue;
     }
-    if (!strcmp(argv[i], "--nsimnode")) {
-      config.nsimnode = std::atoi(argv[++i]);
-      continue;
-    }
-    if (!strcmp(argv[i], "--nsimgpu")) {
-      config.nsimgpu = std::atoi(argv[++i]);
-      continue;
-    }
   }
 }
 
@@ -126,13 +118,11 @@ void top_level_task(const Task* task,
     char **argv = command_args.argv;
     int argc = command_args.argc;
     parse_input_args(argv, argc, moeConfig);
-    ffConfig.batchSize = 32;    // TODO(wxc): manually change it for now
     log_app.print("batchSize(%d) workersPerNodes(%d) numNodes(%d)",
         ffConfig.batchSize, ffConfig.workersPerNode, ffConfig.numNodes);
   }
-  
-  ffConfig.numNodes = moeConfig.nsimnode;
-  FFModel ff(ffConfig, true);
+  FFModel ff(ffConfig);
+
   Tensor input;
   {
     const int dims[] = {ffConfig.batchSize, DATA_DIMS};
@@ -170,13 +160,8 @@ void top_level_task(const Task* task,
   Tensor final_pred = ff.aggregate_spec(agg_inputs, num_exp, lambda);
 
 //-----------------------------------------------------------------
-  if (ffConfig.measurement_only) {
-    ff.run_measurement();
-  }
-  else {
-    ff.simulate_new();
-  }
-#if 0
+
+
   Optimizer* optimizer = new SGDOptimizer(&ff, 0.001f);
   std::vector<MetricsType> metrics;
   metrics.push_back(METRICS_ACCURACY);
@@ -234,7 +219,6 @@ void top_level_task(const Task* task,
   double run_time = 1e-6 * (ts_end - ts_start);
   printf("ELAPSED TIME = %.4fs, THROUGHPUT = %.2f samples/s\n", run_time,
          TRAIN_SAMPLES * ffConfig.epochs / run_time);
-#endif
 }
 
 

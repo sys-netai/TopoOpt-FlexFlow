@@ -234,6 +234,11 @@ if(FF_BUILD_ALL_EXAMPLES)
 endif()
 
 if(FF_BUILD_ALL_EXAMPLES)
+  add_subdirectory(examples/cpp/mixture_of_experts_bak)
+  add_subdirectory(examples/cpp/mixture_of_expertssim_bak)
+endif()
+
+if(FF_BUILD_ALL_EXAMPLES)
   add_subdirectory(examples/cpp/vgg16sim)
 endif()
 

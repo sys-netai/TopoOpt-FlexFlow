@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(FlexFlowExample_MoEsim)
-set(project_target moesim)
+project(FlexFlowExample_MoE)
+set(project_target moe_bak)
 
 set(CPU_SRC
   ${FLEXFLOW_CPP_DRV_SRC}
@@ -17,3 +17,4 @@ target_link_libraries(${project_target} -Wl,--whole-archive flexflow -Wl,--no-wh
 
 set(BIN_DEST "bin")
 install(TARGETS ${project_target} DESTINATION ${BIN_DEST})
+
