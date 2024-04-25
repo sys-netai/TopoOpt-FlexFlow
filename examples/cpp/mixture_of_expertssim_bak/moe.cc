@@ -126,7 +126,6 @@ void top_level_task(const Task* task,
     char **argv = command_args.argv;
     int argc = command_args.argc;
     parse_input_args(argv, argc, moeConfig);
-    ffConfig.batchSize = 32;    // TODO(wxc): manually change it for now
     log_app.print("batchSize(%d) workersPerNodes(%d) numNodes(%d)",
         ffConfig.batchSize, ffConfig.workersPerNode, ffConfig.numNodes);
   }

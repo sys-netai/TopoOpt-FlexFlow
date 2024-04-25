@@ -17,4 +17,3 @@ target_link_libraries(${project_target} -Wl,--whole-archive flexflow -Wl,--no-wh
 
 set(BIN_DEST "bin")
 install(TARGETS ${project_target} DESTINATION ${BIN_DEST})
-
