@@ -488,7 +488,7 @@ topk_forward_kernel(const T* __restrict__ input,
 }
 
 /*static*/
-void TopK::forward_kernel(const TopKMeta* m,
+void TopK::forward_kernel(TopKMeta const * m,
                           const float* input_ptr,
                           float* output_ptr,
                           int* indices_ptr,
@@ -498,6 +498,7 @@ void TopK::forward_kernel(const TopKMeta* m,
 {
   // Adopted from TensorFlow's TopK implementation
   // https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/kernels/topk_op_gpu.h
+  printf("enter forward_kernel\n");
   int num_shards = 0;
   {
     constexpr auto shared_memory_size = 48 << 10;
@@ -517,6 +518,7 @@ void TopK::forward_kernel(const TopKMeta* m,
   topk_forward_kernel<<<num_blocks, num_shards, 0, stream>>>(
     input_ptr, shared_memory_size, length, k, sorted,
     output_ptr, indices_ptr);
+  printf("out forward_kernel\n");
 }
 
 void TopK::forward_task(const Task* task,
@@ -576,6 +578,51 @@ void TopK::forward_task(const Task* task,
     cudaEventDestroy(t_start);
     cudaEventDestroy(t_end);
   }
+}
+void TopK::inner_measure_operator_cost(Simulator *sim,
+                                     std::function<void()> const &forward,
+                                     std::function<void()> const &backward,
+                                     CostMetrics& cost_metrics)
+{
+  cudaStream_t stream;
+  checkCUDA(get_legion_stream(&stream));
+  // measure forward time
+  checkCUDA(cudaDeviceSynchronize());
+  for (int i = 0; i < sim->warmup_times + sim->repeat_times; i++) {
+    if (i == sim->warmup_times) {
+      checkCUDA(cudaEventRecord(sim->start_event, stream));
+    }
+    forward();
+  }
+  checkCUDA(cudaEventRecord(sim->end_event, stream));
+  checkCUDA(cudaEventSynchronize(sim->end_event));
+  float milliseconds;
+  cudaEventElapsedTime(&milliseconds, sim->start_event, sim->end_event);
+  cost_metrics.forward_time = milliseconds / sim->repeat_times;
+
+  // measure backward time
+  if (false) {
+    checkCUDA(cudaDeviceSynchronize());
+    for (int i = 0; i < sim->warmup_times + sim->repeat_times; i++) {
+      if (i == sim->warmup_times) {
+        checkCUDA(cudaEventRecord(sim->start_event, stream));
+      }
+      backward();
+    }
+    checkCUDA(cudaEventRecord(sim->end_event, stream));
+    checkCUDA(cudaEventSynchronize(sim->end_event));
+    cudaEventElapsedTime(&milliseconds, sim->start_event, sim->end_event);
+    cost_metrics.backward_time = milliseconds / sim->repeat_times;
+  } else {
+    cost_metrics.backward_time = 0.0f;
+  }
+
+  // compute memory usage
+  // Assume:
+  //   1. all memory allocations use Simulator::allocate
+  //   2. we call Simulator::free_all before measure an operator
+  // Therefore, the memory usage of an operator is sim->offset
+  cost_metrics.memory_requirement = (size_t)sim->offset;
 }
 
 void TopK::forward(const FFModel& ff)
@@ -751,9 +798,59 @@ bool TopK::measure_operator_cost(Simulator* sim,
                                  const ParallelConfig& pc,
                                  CostMetrics& cost_metrics)
 {
-  // To be implemented
-  assert(false);
-  return false;
+  // // To be implemented
+  // assert(false);
+  // return false;
+  printf("Enter the topk measurement\n");
+  Tensor sub_input, sub_output, sub_output_ind;
+  if (!inputs[0].get_output_sub_tensor(pc, sub_input, op_type)) {
+    return false;
+  }
+  
+  if (!outputs[0].get_output_sub_tensor(pc, sub_output, op_type)) {
+    return false;
+  }
+  if (!outputs[1].get_output_sub_tensor(pc, sub_output_ind, op_type)) {
+    return false;
+  }
+  printf("loading the input output\n");
+  TopKMeta *m = new TopKMeta(sim->handler);
+  m->sorted = sorted;
+
+  //allocate
+  sim->free_all();
+  float *input_ptr = (float *)sim->allocate(sub_input.get_volume(), DT_FLOAT);
+  assert (input_ptr != NULL);
+  float *output_ptr = (float *)sim->allocate(sub_output.get_volume(), DT_FLOAT);
+  assert (output_ptr != NULL);
+  int *output_ind_ptr = (int *)sim->allocate(sub_output_ind.get_volume(), DT_INT32);
+  assert (output_ind_ptr != NULL);
+  printf("pass the allocation\n");
+  // not sure what this code is doing here
+  // if (!(input_ptr && output_ptr && output_ind_ptr)) {
+  //   cost_metrics.forward_time = Simulator::MAXIMUM_TASK_RUN_TIME;
+  //   cost_metrics.backward_time = Simulator::MAXIMUM_TASK_RUN_TIME;
+  //   return true;
+  // }
+  assert(m->profiling == false);
+
+  cudaStream_t stream;
+  checkCUDA(get_legion_stream(&stream));
+
+  Domain in_domain = sub_input.get_domain();
+  int length = in_domain.hi()[0] - in_domain.lo()[0] + 1;
+  size_t batch_size = in_domain.get_volume() / length;
+
+  std::function<void()> forward, backward;
+
+  printf("pass batch cal\n");
+  forward = [&] {forward_kernel(m,input_ptr,output_ptr,output_ind_ptr,batch_size,length,k,sorted,stream);};
+  printf("pass forward kernel\n");
+  inner_measure_operator_cost(sim,forward,backward,cost_metrics);
+  printf("measure is done\n");
+  cost_metrics.backward_time = 0.0f; // not implemented for MOE
+  delete m;
+  return true;
 }
 
 std::string TopK::get_name_structure() const {
