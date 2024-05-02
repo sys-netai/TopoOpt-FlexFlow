@@ -1760,7 +1760,10 @@ public:
   std::string get_name_structure() const;
   void create_weights(FFModel& model);
   void create_output_and_partition(FFModel& model);
-
+  void inner_measure_operator_cost(Simulator *sim,
+                                   std::function<void()> const &forward,
+                                   std::function<void()> const &backward,
+                                   CostMetrics& cost_metrics);
   static OpMeta* init_task(const Task *task,
                            const std::vector<PhysicalRegion> &regions,
                            Context ctx, Runtime *runtime);
