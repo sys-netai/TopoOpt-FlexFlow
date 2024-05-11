@@ -803,7 +803,7 @@ bool TopK::measure_operator_cost(Simulator* sim,
   // return false;
   printf("Enter the topk measurement\n");
   Tensor sub_input, sub_output, sub_output_ind;
-  if (!inputs[0].get_output_sub_tensor(pc, sub_input, op_type)) {
+  if (!inputs[0].get_input_sub_tensor(pc, sub_input, op_type)) {
     return false;
   }
   

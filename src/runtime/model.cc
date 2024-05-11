@@ -205,7 +205,12 @@ bool Tensor::get_input_sub_tensor(const ParallelConfig& pc,
         }
         tensor.numDim = numDim;
         for (int i = 0; i < numDim; i++) {
-          tensor.adim[i] = adim[i] / pc.dim[i];
+          if (adim[i] % pc.dim[i] != 0) {
+            tensor.adim[i] = adim[i] / pc.dim[i] + 1;
+          }
+          else{
+            tensor.adim[i] = adim[i] / pc.dim[i];
+          }
         }
         tensor.data_type = data_type;
       }

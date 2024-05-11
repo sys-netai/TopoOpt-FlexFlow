@@ -31,7 +31,7 @@
 using namespace Legion;
 
 LegionRuntime::Logger::Category log_app("MoE");
-int num_exp = 5;
+int num_exp = 4;
 int num_select = 2;
 
 void parse_input_args(char **argv, int argc, MoeConfig& config)
@@ -146,28 +146,39 @@ void top_level_task(const Task* task,
   float lambda = 0.04f; // multiplier for load balance term
 
   // MoE model
+  printf("moe: input, %d, %d,%d\n", input.numDim,input.adim[0],input.adim[1]);//[784,32]
   Tensor gate_preds = ff.dense(input, 64, AC_MODE_RELU);
-  gate_preds = ff.dense(gate_preds, num_exp, AC_MODE_RELU);
-  Tensor topK_output[2];
+  printf("moe: gate_preds-1, %d, %d,%d\n", gate_preds.numDim,gate_preds.adim[0],gate_preds.adim[1]);//[64,32]
+  gate_preds = ff.dense(gate_preds, num_exp, AC_MODE_RELU); 
+  printf("moe: gate_preds-2, %d, %d,%d\n", gate_preds.numDim,gate_preds.adim[0],gate_preds.adim[1]);//[5,32]
+  Tensor topK_output[2];//why this dim is 2?
   ff.top_k(gate_preds, topK_output, num_select, false);
+  printf("moe: topK_output-1, %d,%d,%d\n", topK_output[0].numDim, topK_output[0].adim[0],topK_output[0].adim[1]);//[2,32]
+  printf("moe: topK_output-2, %d,%d,%d\n", topK_output[1].numDim, topK_output[1].adim[0],topK_output[1].adim[1]);//[2,32]
+  //? what is the output-1 and output-2
   ff.cache(topK_output[1], TRAIN_SAMPLES / ffConfig.batchSize, moe_score);
 
   Tensor exp_tensors[num_exp];
-  ff.group_by(input, topK_output[1], exp_tensors, num_exp, alpha);
+  ff.group_by(input, topK_output[1], exp_tensors, num_exp, alpha);//
+  printf("moe: after groupby: exp_tensors, %d,%d,%d\n", exp_tensors[1].numDim, exp_tensors[1].adim[0],exp_tensors[1].adim[1]);//[784,26]???
 
   Tensor agg_inputs[num_exp+4];
   agg_inputs[0] = ff.softmax(topK_output[0]); // gate preds
   agg_inputs[1] = topK_output[1]; // gate assign
   agg_inputs[2] = topK_output[1]; // gate assign TopK (for cache)
-  agg_inputs[3] = gate_preds; // full gate preds
+  agg_inputs[3] = gate_preds; // full gate preds: [5,32]
   for(int i = 0; i < num_exp; i++) {
     Tensor exp_pred = ff.dense(exp_tensors[i], OUT_DIM, AC_MODE_RELU);
+    printf("moe: exp_pred, %d,%d,%d\n", exp_pred.numDim,exp_pred.adim[0],exp_pred.adim[1]);//[10,26]???
     agg_inputs[i+4] = ff.softmax(exp_pred);
+
   }
 
   Tensor coop_output = ff.aggregate(agg_inputs, num_exp, lambda);
+  printf("moe: after agg: coop_output, %d,%d,%d\n", coop_output.numDim, coop_output.adim[0],coop_output.adim[1]);//[10,32]
   ff.get_metrics();
   Tensor final_pred = ff.aggregate_spec(agg_inputs, num_exp, lambda);
+  printf("moe: after agg_spec: final_pred, %d,%d,%d\n", final_pred.numDim, final_pred.adim[0],final_pred.adim[1]);//[10,64]
 
 //-----------------------------------------------------------------
   if (ffConfig.measurement_only) {

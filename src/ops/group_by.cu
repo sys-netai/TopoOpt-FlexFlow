@@ -60,6 +60,7 @@ Group_by::Group_by(FFModel& model,
 
   // List of outputs
   int k = _assign.adim[0];
+  printf("group_by: k:%d, inputs[0].adim_1:%d\n",k,inputs[0].adim[1]);
   for(int i = 0; i < n; i++) {
     outputs[i].numDim = 2;
     outputs[i].adim[0] = inputs[0].adim[0];
@@ -191,25 +192,30 @@ void gb_forward_kernel(const float* input,
         int batch_size,
         int data_dim)
 {
-  __shared__ float* chosen_exp_preds[MAX_K*MAX_BATCH_SIZE];
+  __shared__ float* chosen_exp_preds[MAX_K*MAX_BATCH_SIZE];//one pointer for each exp_assign (TopK_output[1]) element
 
   // Get pred pointers, single thread per block
+  //printf("groupby: threadIdx.x:%d\n",threadIdx.x);
   if(threadIdx.x == 0) {
-    int exp_tensor_rows = ceil(alpha*k/n*batch_size);
-    int expert_idx[MAX_N] = {0};
+    int exp_tensor_rows = ceil(alpha*k/n*batch_size);//=This is the max expert capacity =26
+    int expert_idx[MAX_N] = {0};// This is the number of tokens assigned to each expert
     for(int i = 0; i < k*batch_size; i++) {
       // Get pointer to chosen expert predictions
-      int expert = exp_assign[i];
-      if(expert_idx[expert] >= exp_tensor_rows) {
+      int expert = exp_assign[i]; // index of the expert that is to receive the token i
+      if(expert_idx[expert] >= exp_tensor_rows) { // check if the expert is already at capacity
         // dropped sample
         chosen_exp_preds[i] = 0;
         continue;
       }
+      // chosen_exp_preds[i] is the pointer to the location in the outputs
+      // tensor's memory where we should copy the i-th tensor. outputs[expert]
+      // points us to the assigned expert's (DATA_DIM, expert capacity) tensor
+      // block expert_idx[expert] * data_dim is the offset within the block
       chosen_exp_preds[i] = outputs[expert] + expert_idx[expert]*data_dim;
       expert_idx[expert]++;
     }
   }
-
+  printf("groupby: before compute output\n");
   __syncthreads();
 
   // compute output
@@ -220,6 +226,7 @@ void gb_forward_kernel(const float* input,
       chosen_exp_preds[i/data_dim][i%data_dim] = a;
     }
   }
+  printf("groupby: gb_forward_kernel is done\n");
 }
 
 
@@ -490,17 +497,174 @@ GroupByMeta::~GroupByMeta(void)
 {
   checkCUDA(cudaFree(&dev_region_ptrs));
 }
+void Group_by::forward_kernel_wrapper(GroupByMeta const *m,
+                                      float const *input,
+                                      int const *exp_assign,
+                                      float **outputs,
+                                      int n, // num experts
+                                      int k, // chosen experts
+                                      int batch_size,
+                                      int data_dim) {
+  // TODO: why cublas/cudnn stream is needed here?
 
+  float alpha = m->alpha;
 
+  cudaStream_t stream;
+  checkCUDA(get_legion_stream(&stream));
+  cudaEvent_t t_start, t_end;
+  if (m->profiling) {
+    cudaEventCreate(&t_start);
+    cudaEventCreate(&t_end);
+    cudaEventRecord(t_start, stream);
+  }
+  // call forward kernel
+  cudaMemcpyAsync(m->dev_region_ptrs,
+                  outputs,
+                  n * sizeof(float *),
+                  cudaMemcpyHostToDevice,
+                  stream);//new version
+  //cudaMemcpy(m->dev_region_ptrs, outputs, n*sizeof(float*), cudaMemcpyHostToDevice);//from old
+  printf("Groupby: finish cudaMemcpy\n");
+  gb_forward_kernel<<<GET_BLOCKS(batch_size * k * data_dim),
+                      min(CUDA_NUM_THREADS, (int)(batch_size * k * data_dim)),
+                      0,
+                      stream>>>(
+      input, exp_assign, m->dev_region_ptrs, n, k, alpha, batch_size, data_dim);
+  printf("Groupby: finish forward kernel\n");
+  if (m->profiling) {
+    cudaEventRecord(t_end, stream);
+    checkCUDA(cudaEventSynchronize(t_end));
+    float elapsed = 0;
+    checkCUDA(cudaEventElapsedTime(&elapsed, t_start, t_end));
+    cudaEventDestroy(t_start);
+    cudaEventDestroy(t_end);
+    printf("[GroupBy] forward time = %.2lfms\n", elapsed);
+  }
+}
+void Group_by::inner_measure_operator_cost(Simulator *sim,
+                                     std::function<void()> const &forward,
+                                     std::function<void()> const &backward,
+                                     CostMetrics& cost_metrics)
+{
+  cudaStream_t stream;
+  checkCUDA(get_legion_stream(&stream));
+  // measure forward time
+  printf("ready to measure forward time\n");
+  checkCUDA(cudaDeviceSynchronize());
+  for (int i = 0; i < sim->warmup_times + sim->repeat_times; i++) {
+    if (i == sim->warmup_times) {
+      checkCUDA(cudaEventRecord(sim->start_event, stream));
+    }
+    forward();
+  }
+  checkCUDA(cudaEventRecord(sim->end_event, stream));
+  checkCUDA(cudaEventSynchronize(sim->end_event));
+  float milliseconds;
+  cudaEventElapsedTime(&milliseconds, sim->start_event, sim->end_event);
+  cost_metrics.forward_time = milliseconds / sim->repeat_times;
+  printf("finish measure forward time\n");
+  // measure backward time
+  if (false) {
+    checkCUDA(cudaDeviceSynchronize());
+    for (int i = 0; i < sim->warmup_times + sim->repeat_times; i++) {
+      if (i == sim->warmup_times) {
+        checkCUDA(cudaEventRecord(sim->start_event, stream));
+      }
+      backward();
+    }
+    checkCUDA(cudaEventRecord(sim->end_event, stream));
+    checkCUDA(cudaEventSynchronize(sim->end_event));
+    cudaEventElapsedTime(&milliseconds, sim->start_event, sim->end_event);
+    cost_metrics.backward_time = milliseconds / sim->repeat_times;
+  } else {
+    cost_metrics.backward_time = 0.0f;
+  }
+
+  // compute memory usage
+  // Assume:
+  //   1. all memory allocations use Simulator::allocate
+  //   2. we call Simulator::free_all before measure an operator
+  // Therefore, the memory usage of an operator is sim->offset
+  cost_metrics.memory_requirement = (size_t)sim->offset;
+}
 bool Group_by::measure_operator_cost(Simulator* sim,
                                  const ParallelConfig& pc,
                                  CostMetrics& cost_metrics)
 {
-  //TODO: implement
-  cost_metrics.forward_time = 0.0f;
-  cost_metrics.backward_time = 0.0f;
-  cost_metrics.memory_requirement = 0;
-  return false;
+  // //TODO: implement
+  // cost_metrics.forward_time = 0.0f;
+  // cost_metrics.backward_time = 0.0f;
+  // cost_metrics.memory_requirement = 0;
+  // return false;
+  printf("Enter the Group_by measurement\n");
+  assert(numOutputs <= MAX_NUM_OUTPUTS);
+  Tensor sub_input, sub_assign;
+  Tensor sub_outputs[MAX_NUM_OUTPUTS];
+  if (!inputs[0].get_input_sub_tensor(pc, sub_input, op_type)) {
+    return false;
+  }
+  if (!inputs[0].get_input_sub_tensor(pc, sub_assign, op_type)) {
+    return false;
+  }
+  for (int i = 0; i < numOutputs; ++i) {
+    if (!outputs[i].get_output_sub_tensor(pc, sub_outputs[i], op_type)) {
+      return false;
+    }
+  }
+  printf("Group_by: finish get sub tensor\n");
+
+  GroupByMeta *m = new GroupByMeta(sim->handler, n);
+  m->alpha = alpha; // also need to update alpha
+
+  // allocate
+  sim->free_all();
+  float *input_ptr = (float *)sim->allocate(sub_input.get_volume(), DT_FLOAT);
+  int *assign_ptr = (int *)sim->allocate(sub_assign.get_volume(), DT_INT32);
+  //cost_metrics.inputs_memory += cost_metrics.total_mem_diff_from(sim->offset);
+
+  float *output_ptrs[MAX_NUM_OUTPUTS];
+  bool out_of_memory = false;
+  for (int i = 0; i < numOutputs; i++) {
+    output_ptrs[i] =
+        (float *)sim->allocate(sub_outputs[i].get_volume(), DT_FLOAT);
+    out_of_memory = out_of_memory || (output_ptrs[i] == NULL);
+  }
+  //cost_metrics.outputs_memory += cost_metrics.total_mem_diff_from(sim->offset);
+
+  if (out_of_memory || !input_ptr || !assign_ptr) {
+    cost_metrics.forward_time = 1e7;
+    cost_metrics.backward_time = 1e7;
+    return true;
+  }
+
+  assert(m->profiling == false);
+
+  // compute
+  std::function<void()> forward, backward;
+
+  Domain in_domain = sub_input.get_domain();
+  //int k = sub_assign.dims[0].size;
+  Domain assign_domain = sub_assign.get_domain();
+  int k = assign_domain.hi()[0] - assign_domain.lo()[0] + 1;//old version of calculating k
+
+  int batch_size = in_domain.hi()[1] - in_domain.lo()[1] + 1;
+  int data_dim = in_domain.hi()[0] - in_domain.lo()[0] + 1;
+  printf("Group_by: ready to enter forward \n");
+  forward = [&] {
+    forward_kernel_wrapper(
+        m, input_ptr, assign_ptr, output_ptrs, n, k, batch_size, data_dim);
+  };
+
+  inner_measure_operator_cost(sim, forward, backward, cost_metrics);
+  printf("Group_by: finish inner measure operator\n");
+  // log_measure.debug("[Measure GroupBy] name(%s) forward_time(%.4lf)\n",
+  //                   name,
+  //                   cost_metrics.forward_time);
+
+  cost_metrics.backward_time = 0.0f; // not implemented for MOE
+  delete m;
+  
+  return true;
 }
 
 std::string Group_by::get_name_structure() const {

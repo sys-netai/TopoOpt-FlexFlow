@@ -61,6 +61,7 @@ Aggregate::Aggregate(FFModel& model,
   // expert inputs
   int num_dim = inputs[4].numDim;
   int out_dim = inputs[4].adim[0];
+  printf("aggregate: num_dim:%d, out_dim:%d, output_adim:%d \n",num_dim,out_dim,inputs[4].adim[1]);
   for(int i = 1; i < n; i++) {
     assert(inputs[i+4].numDim == num_dim);
     assert(inputs[i+4].adim[0] == out_dim);
@@ -69,8 +70,8 @@ Aggregate::Aggregate(FFModel& model,
   outputs[0].numDim = num_dim;
   for(int i = 0; i < num_dim-1; i++)
     outputs[0].adim[i] = inputs[4].adim[i];
-  outputs[0].adim[num_dim-1] = inputs[0].adim[num_dim-1];
-
+  outputs[0].adim[num_dim-1] = inputs[0].adim[num_dim-1];//update it into 32
+  printf("aggregate: output_0: adim_0:%d, adim_1:%d\n",outputs[0].adim[0],outputs[0].adim[1]);
   numWeights = 0;
 }
 
@@ -648,17 +649,192 @@ AggregateMeta::~AggregateMeta(void)
   checkCUDA(cudaFree(&dev_exp_preds));
   checkCUDA(cudaFree(&dev_exp_grads));
 }
+// new function from latest version ff
+/*static*/
+void Aggregate::forward_kernel_wrapper(AggregateMeta const *m,
+                                       float **exp_preds,
+                                       int const *acc_gate_assign_ptr,
+                                       float const *acc_gate_pred_ptr,
+                                       float *acc_output_ptr,
+                                       int n,
+                                       int const k,
+                                       int rows,
+                                       int const batch_size,
+                                       int out_dim) {
+  cudaStream_t stream;
+  checkCUDA(get_legion_stream(&stream));
+  checkCUDA(cublasSetStream(m->handle.blas, stream));
+  checkCUDNN(cudnnSetStream(m->handle.dnn, stream));
 
+  // cudaEvent_t t_start, t_end;
+  // if (m->profiling) {
+  //   cudaEventCreate(&t_start);
+  //   cudaEventCreate(&t_end);
+  //   cudaEventRecord(t_start, stream);
+  // }
+
+  // call forward_kernel
+  cudaMemcpy(
+      m->dev_exp_preds, exp_preds, n * sizeof(float *), cudaMemcpyHostToDevice);
+
+  agg_forward_kernel<<<GET_BLOCKS(batch_size * k * out_dim),
+                       min(CUDA_NUM_THREADS, (int)(batch_size * k * out_dim)),
+                       0,
+                       stream>>>(m->dev_exp_preds,
+                                 acc_gate_assign_ptr,
+                                 acc_gate_pred_ptr,
+                                 acc_output_ptr,
+                                 n,
+                                 k,
+                                 rows,
+                                 batch_size,
+                                 out_dim);
+  // if (m->profiling) {
+  //   cudaEventRecord(t_end, stream);
+  //   checkCUDA(cudaEventSynchronize(t_end));
+  //   float elapsed = 0;
+  //   checkCUDA(cudaEventElapsedTime(&elapsed, t_start, t_end));
+  //   cudaEventDestroy(t_start);
+  //   cudaEventDestroy(t_end);
+  //   printf("[Aggregate] forward time = %.2lfms\n", elapsed);
+  // }
+}
+void Aggregate::inner_measure_operator_cost(Simulator *sim,
+                                     std::function<void()> const &forward,
+                                     std::function<void()> const &backward,
+                                     CostMetrics& cost_metrics)
+{
+  cudaStream_t stream;
+  checkCUDA(get_legion_stream(&stream));
+  // measure forward time
+  checkCUDA(cudaDeviceSynchronize());
+  for (int i = 0; i < sim->warmup_times + sim->repeat_times; i++) {
+    if (i == sim->warmup_times) {
+      checkCUDA(cudaEventRecord(sim->start_event, stream));
+    }
+    forward();
+  }
+  checkCUDA(cudaEventRecord(sim->end_event, stream));
+  checkCUDA(cudaEventSynchronize(sim->end_event));
+  float milliseconds;
+  cudaEventElapsedTime(&milliseconds, sim->start_event, sim->end_event);
+  cost_metrics.forward_time = milliseconds / sim->repeat_times;
+
+  // measure backward time
+  if (false) {
+    checkCUDA(cudaDeviceSynchronize());
+    for (int i = 0; i < sim->warmup_times + sim->repeat_times; i++) {
+      if (i == sim->warmup_times) {
+        checkCUDA(cudaEventRecord(sim->start_event, stream));
+      }
+      backward();
+    }
+    checkCUDA(cudaEventRecord(sim->end_event, stream));
+    checkCUDA(cudaEventSynchronize(sim->end_event));
+    cudaEventElapsedTime(&milliseconds, sim->start_event, sim->end_event);
+    cost_metrics.backward_time = milliseconds / sim->repeat_times;
+  } else {
+    cost_metrics.backward_time = 0.0f;
+  }
+
+  // compute memory usage
+  // Assume:
+  //   1. all memory allocations use Simulator::allocate
+  //   2. we call Simulator::free_all before measure an operator
+  // Therefore, the memory usage of an operator is sim->offset
+  cost_metrics.memory_requirement = (size_t)sim->offset;
+}
 
 bool Aggregate::measure_operator_cost(Simulator* sim,
                                  const ParallelConfig& pc,
                                  CostMetrics& cost_metrics)
 {
-  //TODO: implement
-  cost_metrics.forward_time = 0.0f;
-  cost_metrics.backward_time = 0.0f;
-  cost_metrics.memory_requirement = 0;
-  return false;
+  // //TODO: implement
+  // cost_metrics.forward_time = 0.0f;
+  // cost_metrics.backward_time = 0.0f;
+  // cost_metrics.memory_requirement = 0;
+  // return false;
+
+  //code by yijun
+  //the bug seems to be the unfinished groupby
+  assert(numInputs <= 2048);
+  printf("Enter the aggregate measurement\n");
+  Tensor sub_inputs[2048], sub_pred, sub_assign, sub_output;// latest MAX_NUM_INPUTS == 2048, here the value is 256
+  printf("numInputs:%d \n",numInputs);
+  printf("pc info: pc.nDims:%d,pc.dim[0]:%d,pc.dim[1]:%d \n",pc.nDims,pc.dim[0],pc.dim[1]);
+  for (int i = 0; i < numInputs; ++i) {
+    if (!inputs[i + 4].get_input_sub_tensor(pc, sub_inputs[i], op_type)) {
+      return false;
+    }
+  }
+  if (!inputs[0].get_input_sub_tensor(pc, sub_pred, op_type)) {
+    return false;
+  }
+  if (!inputs[1].get_input_sub_tensor(pc, sub_assign, op_type)) {
+    return false;
+  }
+  if (!outputs[0].get_output_sub_tensor(pc, sub_output, op_type)) {
+    return false;
+  }
+
+  AggregateMeta *m = new AggregateMeta(sim->handler, n);
+
+  // allocate
+  sim->free_all();
+
+  float *input_ptrs[2048];
+  bool out_of_memory = false;
+  for (int i = 0; i < numInputs; ++i) {
+    input_ptrs[i] =
+        (float *)sim->allocate(sub_inputs[i].get_volume(), DT_FLOAT);
+    out_of_memory = out_of_memory || (input_ptrs[i] == NULL);
+  }
+  int *assign_ptr = (int *)sim->allocate(sub_assign.get_volume(), DT_INT32);
+  out_of_memory = out_of_memory || (assign_ptr == NULL);
+  float *pred_ptr = (float *)sim->allocate(sub_pred.get_volume(), DT_FLOAT);
+  out_of_memory = out_of_memory || (pred_ptr == NULL);
+
+  //cost_metrics.inputs_memory += cost_metrics.total_mem_diff_from(sim->offset);
+
+  float *output_ptr = (float *)sim->allocate(sub_output.get_volume(), DT_FLOAT);
+
+  //cost_metrics.outputs_memory += cost_metrics.total_mem_diff_from(sim->offset);
+
+  out_of_memory = out_of_memory || (output_ptr == NULL);
+  if (out_of_memory) {
+    cost_metrics.forward_time = 1e7;
+    cost_metrics.backward_time = 1e7;
+    return true;
+  }
+  assert(m->profiling == false);
+  // compute
+
+  std::function<void()> forward, backward;
+  Domain assign_domain = sub_assign.get_domain();
+  Domain exp_domain = sub_inputs[0].get_domain();
+
+  int k = assign_domain.hi()[0] - assign_domain.lo()[0] + 1;
+  int batch_size = assign_domain.hi()[1] - assign_domain.lo()[1] + 1;
+  int rows = exp_domain.hi()[1] - exp_domain.lo()[1] + 1;
+  int out_dim = exp_domain.hi()[0] - exp_domain.lo()[0] + 1;
+
+  //refer to the latest aggregate::forward_kernel_wrapper
+  forward = [&] {
+    forward_kernel_wrapper(m,
+                           input_ptrs,
+                           assign_ptr,
+                           pred_ptr,
+                           output_ptr,
+                           n,
+                           k,
+                           rows,
+                           batch_size,
+                           out_dim);
+  };
+  inner_measure_operator_cost(sim, forward, backward, cost_metrics);
+  cost_metrics.backward_time = 0.0f; // not implemented for backward
+  delete m;
+  return true;
 }
 
 std::string Aggregate::get_name_structure() const {

@@ -1254,6 +1254,7 @@ public:
   GroupByMeta(FFHandler handle, int n);
   ~GroupByMeta(void);
   float** dev_region_ptrs;
+  float alpha;
 };
 
 class Group_by : public Op {
@@ -1283,6 +1284,18 @@ public:
   bool measure_operator_cost(Simulator* sim,
                              const ParallelConfig& pc,
                              CostMetrics& cost_metrics);
+  void inner_measure_operator_cost(Simulator *sim,
+                                     std::function<void()> const &forward,
+                                     std::function<void()> const &backward,
+                                     CostMetrics& cost_metrics);
+  void forward_kernel_wrapper(GroupByMeta const *m,
+                                      float const *input,
+                                      int const *exp_assign,
+                                      float **outputs,
+                                      int n, // num experts
+                                      int k, // chosen experts
+                                      int batch_size,
+                                      int data_dim);
 public:
   int n;
   float alpha;
@@ -1368,6 +1381,20 @@ public:
   bool measure_operator_cost(Simulator* sim,
                              const ParallelConfig& pc,
                              CostMetrics& cost_metrics);
+  void forward_kernel_wrapper(AggregateMeta const *m,
+                              float **exp_preds,
+                              int const *acc_gate_assign_ptr,
+                              float const *acc_gate_pred_ptr,
+                              float *acc_output_ptr,
+                              int n,
+                              int const k,
+                              int rows,
+                              int const batch_size,
+                              int out_dim);
+  void inner_measure_operator_cost(Simulator *sim,
+                                    std::function<void()> const &forward,
+                                    std::function<void()> const &backward,
+                                    CostMetrics& cost_metrics);
 public:
   int n;
   float lambda_bal;
